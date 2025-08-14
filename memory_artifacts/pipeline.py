@@ -789,6 +789,55 @@ def write_master_mart_proposed(tiers, ontology):
     (OUT_DIR/"memory_mart_all_proposed.md").write_text("\n".join(lines), encoding='utf-8')
 
 
+def write_memory_mart_onedoc(tiers, rows, ontology, filename="Memory_Mart_OneDoc.md"):
+    # Single-file deliverable optimized for tools that accept one document
+    lines = ["# Memory Mart — OneDoc", ""]
+    # Tier 0/1 concise
+    lines.append("## Tier 0")
+    for e in tiers.get(0, []):
+        lines.append(f"- [{e.get('primary_topic','')}] {e.get('core_belief','')}")
+    lines.append("")
+    lines.append("## Tier 1")
+    for e in tiers.get(1, []):
+        lines.append(f"- [{e.get('primary_topic','')}] {e.get('core_belief','')} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+    lines.append("")
+    # Tier 2 by ontology category (post-promotion)
+    lines.append("## Tier 2 (by ontology category)")
+    by_cat2 = defaultdict(list)
+    for e in tiers.get(2, []):
+        cat = ontology.get('map', {}).get(e.get('primary_topic','')) or _slugify(e.get('primary_topic',''))
+        by_cat2[cat].append(e)
+    for cat in sorted(by_cat2.keys()):
+        arr = by_cat2[cat]
+        lines.append(f"### {cat} ({len(arr)})")
+        for e in arr:
+            role = e.get('role','')
+            role_tag = f" [{role}]" if role else ""
+            lines.append(f"- {e.get('core_belief','')}{role_tag} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+        lines.append("")
+    # Cross-reference table (Tier 2 only) for traceability
+    lines.append("## Cross-reference (Tier 2 only)")
+    idx = {}
+    for r in rows:
+        idx[(r['excerpt'], r['provenance_id'])] = r
+    lines.append("| Tier | Entry (≤15 words) | Category | Linked Tier 0/1 Value(s) | Influences | Provenance |")
+    lines.append("|---|---|---|---|---|---|")
+    for e in tiers.get(2, []):
+        key = (e.get('excerpt',''), e.get('provenance',''))
+        r = idx.get(key, {})
+        cat = r.get('ont_category') or _slugify(e.get('primary_topic','Misc'))
+        entry = _short_words(e.get('excerpt',''), 15)
+        linked = link_values_for_entry({**r, **e}, ontology)
+        link_str = "; ".join(linked) if linked else "—"
+        infl = extract_influences(e.get('excerpt',''))
+        infl_str = ", ".join(infl) if infl else "—"
+        notes = e.get('provenance','') or r.get('provenance_id','')
+        lines.append(f"| 2 | {entry} | {cat} | {link_str} | {infl_str} | {notes} |")
+    target = OUT_DIR / "final" / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines), encoding='utf-8')
+
+
 # --- Auto-carve Misc into dynamic topics ---
 STOPWORDS = set('''a an the and or but if then else for to of in on at by with without from this that these those is are was were be been being do does did not no yes it its itself you your i me my mine we our they them their as into about over under within across up down out more most less least many much few lot lots very just here there now new old other another same different also than while when where why how which who whom whose because so such can could should would will shall may might must own per vs via etc'''.split())
 
@@ -988,6 +1037,8 @@ def main():
     write_memory_mart_all(tiers)
     # Regenerate cross-reference after promotions to reflect final tiers
     write_cross_reference_table(tiers, refined_rows, ontology)
+    # OneDoc consolidated file for single-doc tools
+    write_memory_mart_onedoc(tiers, refined_rows, ontology)
 
 if __name__ == "__main__":
     main()
