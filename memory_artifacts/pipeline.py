@@ -6,6 +6,9 @@ from pathlib import Path
 SRC = Path(r"a:\Padawan_Workspace\MP\copilot-activity-history.csv")
 OUT_DIR = Path(r"a:\Padawan_Workspace\MP\memory_artifacts")
 
+# Ontology & approvals files (human-in-the-loop)
+ONTOLOGY_FILE = OUT_DIR / "ontology.json"
+APPROVALS_FILE = OUT_DIR / "approvals.json"
 # Optional file with manual carves: lines like `carve: <name> ~ <regex>`
 CARVE_FILE = OUT_DIR / "carves.txt"
 # Optional date filter (inclusive). Leave as None to include all.
@@ -547,6 +550,244 @@ def write_memory_mart_all(tiers):
     (OUT_DIR/"memory_mart_all.md").write_text("\n".join(lines), encoding='utf-8')
 
 
+# ==================== Ontology-driven regrouping & cross-references ====================
+
+def _slugify(s: str) -> str:
+    s = (s or '').strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return re.sub(r"-+", "-", s).strip('-') or 'misc'
+
+
+def _short_words(s: str, max_words=15) -> str:
+    words = re.findall(r"\w+|[^\w\s]", s or '')
+    out, cnt = [], 0
+    for w in words:
+        if re.match(r"\w+", w):
+            cnt += 1
+        out.append(w)
+        if cnt >= max_words:
+            break
+    return (" ".join(out)).strip()
+
+
+def load_ontology(tiers):
+    # Load or bootstrap an ontology that defines values and category mapping
+    if ONTOLOGY_FILE.exists():
+        try:
+            return json.loads(ONTOLOGY_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    # Bootstrap default from existing Tier 0/1 entries
+    values = []
+    seen = set()
+    for tier in (0,1):
+        for e in tiers.get(tier, []):
+            label = e.get('core_belief') or e.get('primary_topic')
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            values.append({
+                "id": f"T{tier}:{_slugify(label)[:40]}",
+                "label": label,
+                "tier": tier
+            })
+    # Default topic->category map using current topics as categories
+    topic_map = {}
+    for tier_list in tiers.values():
+        for e in tier_list:
+            topic_map[e.get('primary_topic','Misc')] = _slugify(e.get('primary_topic','Misc'))
+    ont = {
+        "values": values,
+        "categories": {},
+        "map": topic_map,
+        # optional manual hints: "value_map": { "data-engineering": ["T0:memory-hygiene-..." ] }
+    }
+    ONTOLOGY_FILE.write_text(json.dumps(ont, ensure_ascii=False, indent=2), encoding='utf-8')
+    return ont
+
+
+def reindex_with_ontology(rows, ontology):
+    m = ontology.get('map', {})
+    for r in rows:
+        cat = m.get(r['primary_topic'])
+        if not cat and r['primary_topic'].lower().startswith('auto:'):
+            cat = _slugify(r['primary_topic'][5:])
+        r['ont_category'] = cat or _slugify(r['primary_topic'])
+    return rows
+
+
+def _value_candidates(ontology):
+    # returns list of (id, label, token-set)
+    vals = []
+    for v in ontology.get('values', []):
+        toks = set(tokenize(v.get('label','')))
+        vals.append((v.get('id'), v.get('label'), toks))
+    return vals
+
+
+def link_values_for_entry(entry, ontology):
+    # Heuristic: link by token overlap, plus optional value_map by category
+    vals = _value_candidates(ontology)
+    cat = entry.get('ont_category') or _slugify(entry.get('primary_topic',''))
+    text = f"{entry.get('primary_topic','')} {entry.get('excerpt','')}"
+    toks = set(tokenize(text))
+    linked = []
+    for vid, vlabel, vtoks in vals:
+        if not vtoks:
+            continue
+        overlap = len(vtoks & toks)
+        if overlap >= 2:
+            linked.append((vid, vlabel, overlap))
+    # add manual hints
+    for vid in (ontology.get('value_map', {}) or {}).get(cat, []):
+        v = next((x for x in ontology.get('values',[]) if x.get('id')==vid), None)
+        if v:
+            linked.append((vid, v.get('label'), 99))
+    # unique by id, sort by score desc
+    uniq = {}
+    for vid, vlabel, score in linked:
+        uniq[vid] = max(score, uniq.get(vid, 0))
+    # return top 2 labels with tier annotation if known
+    annotated = []
+    for vid, score in sorted(uniq.items(), key=lambda x: -x[1])[:2]:
+        v = next((x for x in ontology.get('values',[]) if x.get('id')==vid), None)
+        if v is None:
+            annotated.append((vid, score, ""))
+        else:
+            annotated.append((v.get('label'), score, v.get('tier', '')))
+    return [f"Tier {t}: {lab}" if t in (0,1) else lab for lab, _, t in annotated] or []
+
+
+def extract_influences(text: str):
+    # Simple proper-noun detector; prefer two-word names
+    if not text:
+        return []
+    cands = re.findall(r"\b([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})\b", text)
+    # filter common sentence starts and months/days
+    stop = {"I","The","In","On","At","And","But","So","If","For","A","An","Of","To","We","You","He","She","They","It","May","June","July","August","September","October","November","December"}
+    out = []
+    for c in cands:
+        parts = c.split()
+        if any(p in stop for p in parts[:1]):
+            continue
+        if len(parts)==1 and len(c) < 4:
+            continue
+        out.append(c)
+    # dedupe, cap
+    seen = []
+    for x in out:
+        if x not in seen:
+            seen.append(x)
+    return seen[:3]
+
+
+def write_cross_reference_table(tiers, rows, ontology):
+    # Build index from rows for provenance lookup
+    idx = {}
+    for r in rows:
+        idx[(r['excerpt'], r['provenance_id'])] = r
+    lines = [
+        "| Tier | Entry (≤15\u202Fwords)                        | Primary Topic      | Linked Tier\u202F0/1 Value(s)     | Influence(s)              | Notes / Provenance                   |",
+        "|------|----------------------------------------------|--------------------|------------------------------|---------------------------|---------------------------------------|",
+    ]
+    def add_row(tier, e):
+        key = (e.get('excerpt',''), e.get('provenance',''))
+        r = idx.get(key, {})
+        topic = r.get('ont_category') or _slugify(e.get('primary_topic','Misc'))
+        entry = _short_words(e.get('excerpt',''), 15)
+        linked = link_values_for_entry({**r, **e}, ontology)
+        link_str = "; ".join(linked) if linked else "—"
+        infl = extract_influences(e.get('excerpt',''))
+        infl_str = ", ".join(infl) if infl else "—"
+        notes = e.get('provenance','') or r.get('provenance_id','')
+        lines.append(f"| {tier}    | {entry:<42} | {topic:<18} | {link_str:<28} | {infl_str:<25} | {notes:<37} |")
+    for tier in (2,3):
+        for e in tiers.get(tier, []):
+            add_row(tier, e)
+    (OUT_DIR/"cross_reference.md").write_text("\n".join(lines), encoding='utf-8')
+
+
+def propose_promotions(tiers, rows, ontology):
+    # Heuristics: strong language + linked to Tier 0/1 + recurring topic
+    topic_counts_user = defaultdict(int)
+    for r in rows:
+        if r['role'] == 'user':
+            topic_counts_user[r['primary_topic']] += 1
+    proposals = []
+    for tier in (3,):
+        for e in tiers.get(tier, []):
+            text = e.get('excerpt','')
+            userish = e.get('role','') == 'user'
+            strong = bool(re.search(r"\b(should|must|prefer|i believe|i think|i want|i will)\b", text, re.I))
+            # link to values
+            linked = link_values_for_entry({"primary_topic": e.get('primary_topic',''), "excerpt": text}, ontology)
+            recurring = topic_counts_user.get(e.get('primary_topic',''), 0) >= 5
+            if userish and (strong or linked or recurring):
+                new_tier = 2 if linked or recurring else 2
+                reason = []
+                if strong: reason.append("strong-statement")
+                if linked: reason.append("reinforces-values")
+                if recurring: reason.append("recurring-topic")
+                proposals.append({
+                    "provenance": e.get('provenance',''),
+                    "excerpt": text,
+                    "from_tier": tier,
+                    "to_tier": new_tier,
+                    "primary_topic": e.get('primary_topic',''),
+                    "reasons": reason,
+                })
+    (OUT_DIR/"proposals.json").write_text(json.dumps({"promotions": proposals}, ensure_ascii=False, indent=2), encoding='utf-8')
+    # Human-readable summary
+    md = ["# Proposed Promotions (Human-in-the-loop)",""]
+    for p in proposals[:200]:
+        md.append(f"- Promote to Tier {p['to_tier']} ({', '.join(p['reasons'])}): \"{_short_words(p['excerpt'], 20)}\" — {p['provenance']}")
+    (OUT_DIR/"proposals.md").write_text("\n".join(md), encoding='utf-8')
+
+
+def write_master_mart_proposed(tiers, ontology):
+    # Group Tier 2/3 by ontology category, do not apply promotions yet
+    lines = ["# Memory Mart (All Tiers — Proposed Regrouping)",""]
+    lines.append("## Tier 0")
+    for e in tiers.get(0, []):
+        lines.append(f"- [{e.get('primary_topic','')}] {e.get('core_belief','')}")
+    lines.append("")
+    lines.append("## Tier 1")
+    for e in tiers.get(1, []):
+        lines.append(f"- [{e.get('primary_topic','')}] {e.get('core_belief','')} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+    lines.append("")
+    # Tier 2 by category
+    lines.append("## Tier 2 (by ontology category)")
+    by_cat2 = defaultdict(list)
+    for e in tiers.get(2, []):
+        cat = ontology.get('map', {}).get(e.get('primary_topic','')) or _slugify(e.get('primary_topic',''))
+        by_cat2[cat].append(e)
+    for cat in sorted(by_cat2.keys()):
+        arr = by_cat2[cat]
+        lines.append(f"### {cat} ({len(arr)})")
+        for e in arr:
+            role = e.get('role','')
+            role_tag = f" [{role}]" if role else ""
+            lines.append(f"- {e.get('core_belief','')}{role_tag} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+        lines.append("")
+    # Tier 3 by category (capped)
+    lines.append("## Tier 3 (by ontology category, capped)")
+    by_cat3 = defaultdict(list)
+    for e in tiers.get(3, []):
+        cat = ontology.get('map', {}).get(e.get('primary_topic','')) or _slugify(e.get('primary_topic',''))
+        by_cat3[cat].append(e)
+    for cat in sorted(by_cat3.keys()):
+        arr = by_cat3[cat]
+        lines.append(f"### {cat} ({len(arr)})")
+        for e in arr[:50]:
+            role = e.get('role','')
+            role_tag = f" [{role}]" if role else ""
+            lines.append(f"- {e.get('core_belief','')}{role_tag} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+        if len(arr) > 50:
+            lines.append(f"- ...and {len(arr) - 50} more")
+        lines.append("")
+    (OUT_DIR/"memory_mart_all_proposed.md").write_text("\n".join(lines), encoding='utf-8')
+
+
 # --- Auto-carve Misc into dynamic topics ---
 STOPWORDS = set('''a an the and or but if then else for to of in on at by with without from this that these those is are was were be been being do does did not no yes it its itself you your i me my mine we our they them their as into about over under within across up down out more most less least many much few lot lots very just here there now new old other another same different also than while when where why how which who whom whose because so such can could should would will shall may might must own per vs via etc'''.split())
 
@@ -695,3 +936,12 @@ def main():
     write_memory_mart_all(tiers)
     write_opinion_deltas(refined_rows)
     write_opinion_deltas_semantic(refined_rows)
+    # Ontology + proposals + cross-reference
+    ontology = load_ontology(tiers)
+    refined_rows = reindex_with_ontology(refined_rows, ontology)
+    write_cross_reference_table(tiers, refined_rows, ontology)
+    propose_promotions(tiers, refined_rows, ontology)
+    write_master_mart_proposed(tiers, ontology)
+
+if __name__ == "__main__":
+    main()
