@@ -6,6 +6,8 @@ from pathlib import Path
 SRC = Path(r"a:\Padawan_Workspace\MP\copilot-activity-history.csv")
 OUT_DIR = Path(r"a:\Padawan_Workspace\MP\memory_artifacts")
 
+# Optional file with manual carves: lines like `carve: <name> ~ <regex>`
+CARVE_FILE = OUT_DIR / "carves.txt"
 # Optional date filter (inclusive). Leave as None to include all.
 START_DATE = None  # e.g., datetime(2024, 1, 1)
 END_DATE = None    # e.g., datetime(2025, 12, 31)
@@ -26,19 +28,22 @@ INTENT_PATTERNS = [
 ]
 
 TOPIC_SEEDS = [
+    # Specific carves before generic
+    (re.compile(r"apollo|space shuttle|\bSTS-?\d+\b|challenger|columbia|astronaut|\bNASA\b", re.I), "Space history"),
+    (re.compile(r"washing machine|washer|dryer|fridge|refrigerator|oven|microwave|vacuum|maintenance", re.I), "Household Q&A"),
     (re.compile(r"privacy|dashboard|export|copilot|history", re.I), "Copilot history"),
     (re.compile(r"memory|remember|echo chamber", re.I), "Memory feature"),
     (re.compile(r"grand strategy|paradox|europa|cooperation|patience|zero-sum|openness|consistency", re.I), "AI strategy & games"),
     (re.compile(r"modern slavery|slavery act|debt bondage|domestic servitude", re.I), "Modern slavery Q&A"),
-    (re.compile(r"napoleon|malta|french revolution|roma|sinti|apollo|challenger|roosevelt|thanksgiving", re.I), "History threads"),
+    (re.compile(r"napoleon|malta|french revolution|roma|sinti|roosevelt|thanksgiving", re.I), "History threads"),
     (re.compile(r"dishwasher|rinse aid|salt|siemens", re.I), "Dishwasher tips"),
     (re.compile(r"sisal|flax|vlas|manila|flask", re.I), "Materials & outdoor"),
     (re.compile(r"android|root|safetynet|play integrity|termux|docker|podman", re.I), "Android dev & security"),
     (re.compile(r"gpl|license|rijnsburg", re.I), "Licensing philosophy"),
-    # New buckets to reduce Misc
     (re.compile(r"\bdbt\b|bytes?|gigabyte|log\(|logging|data (?:engineering|pipeline)", re.I), "Data engineering & logging"),
     (re.compile(r"Downton Abbey|Bob Marley|actor|series|show|movie", re.I), "Culture & media"),
     (re.compile(r"murder|ethics|morals?|allowed|not allowed", re.I), "Ethics & policy"),
+    (re.compile(r"inflation|credit|interest|pound|quid|prices?|economics|finance|zero[-\s]?sum", re.I), "Economics & finance"),
 ]
 
 SUBTAG_EXTRACT = [
@@ -61,15 +66,32 @@ ENTITY_PATTERNS = [
 ROLE_MAP = {"AI":"assistant","Human":"user"}
 
 # --- Redaction helpers ---
-URL_RX = re.compile(r"https?://([\w.-]+)(?:/[\S]*)?", re.I)
+URL_RX = re.compile(r"https?://([\w.-]+)(?:/([\S]*))?", re.I)
 EMAIL_RX = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 PHONE_SIMPLE_RX = re.compile(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b")
+
+# Domains to keep full URLs (no redaction of path)
+ALLOW_FULL_URL_DOMAINS = [
+    'microsoft.com','account.microsoft.com','learn.microsoft.com',
+    'gov.uk','legislation.gov.uk','wikipedia.org','github.com'
+]
+
+
+def _domain_allowed(domain: str) -> bool:
+    d = domain.lower()
+    return any(d==a or d.endswith('.'+a) for a in ALLOW_FULL_URL_DOMAINS)
 
 
 def redact_text(s: str) -> str:
     if not s:
         return s
-    s = URL_RX.sub(lambda m: f"[URL:{m.group(1).lower()}]", s)
+    def _url_sub(m):
+        full = m.group(0)
+        dom = m.group(1).lower()
+        if _domain_allowed(dom):
+            return full
+        return f"[URL:{dom}]"
+    s = URL_RX.sub(_url_sub, s)
     s = EMAIL_RX.sub("[EMAIL]", s)
     s = PHONE_SIMPLE_RX.sub("[PHONE]", s)
     return s
@@ -244,6 +266,12 @@ def synthesize_cluster(topic, items):
         core_belief = "Clarify cultural references and media history; separate fact from myth."
     elif topic == "Ethics & policy":
         core_belief = "Maintain moral clarity on harms; nuance where appropriate, clarity where required."
+    elif topic == "Economics & finance":
+        core_belief = "Prefer positive-sum framing; understand inflation, prices, and incentives."
+    elif topic == "Space history":
+        core_belief = "Differentiate mission incidents; learn from aerospace failures and timelines."
+    elif topic == "Household Q&A":
+        core_belief = "Practical home maintenance tips; map symbols/alerts; schedule refills and care cycles."
     else:
         core_belief = "Mixed factual clarifications across topics."
 
@@ -373,14 +401,16 @@ def propose_memory(clusters):
         "core_belief": "Strategic triad: openness+consistency+cooperation underpin long-term trust.",
         "excerpt": "Strategic triad: openness+consistency+cooperation underpin long-term trust.",
         "provenance": "Synthesis",
-        "priority": 1
+        "priority": 1,
+        "role": "assistant"
     })
     tiers[0].append({
         "primary_topic": "Memory feature",
         "core_belief": "Memory hygiene: intentional, auditable, counter-bias by design.",
         "excerpt": "Memory hygiene: intentional, auditable, counter-bias by design.",
         "provenance": "Synthesis",
-        "priority": 1
+        "priority": 1,
+        "role": "assistant"
     })
 
     # helper
@@ -390,21 +420,29 @@ def propose_memory(clusters):
             "core_belief": belief,
             "excerpt": row['excerpt'],
             "provenance": row['provenance_id'],
-            "priority": row['priority']
+            "priority": row['priority'],
+            "role": row.get('role','user')
         })
 
     # heuristics: pick representative user lines per topic
     for topic, items in clusters.items():
         user_items = [r for r in items if r['role']=="user"]
-        if not user_items:
-            continue
-        rep = user_items[0]
+        asst_items = [r for r in items if r['role']=="assistant"]
         if topic in ("AI strategy & games", "Memory feature", "Copilot history"):
-            add(1, topic, "Openness+consistency enable long-term strategy; curate memory intentionally.", rep)
-        elif topic in ("Android dev & security", "Licensing philosophy", "Data engineering & logging"):
-            add(2, topic, "Operational constraints and practices to note.", rep)
+            if user_items:
+                add(1, topic, "Openness+consistency enable long-term strategy; curate memory intentionally.", user_items[0])
+            # keep Tier 1 focused; no assistant addition here
+            continue
+        if topic in ("Android dev & security", "Licensing philosophy", "Data engineering & logging"):
+            if user_items:
+                add(2, topic, "Operational constraints and practices to note.", user_items[0])
+            if asst_items:
+                add(2, topic, "Operational constraints and practices to note.", asst_items[0])
         else:
-            add(3, topic, "Reference interest/clarification in this topic.", rep)
+            if user_items:
+                add(3, topic, "Reference interest/clarification in this topic.", user_items[0])
+            if asst_items:
+                add(3, topic, "Reference interest/clarification in this topic.", asst_items[0])
     return tiers
 
 
@@ -434,8 +472,211 @@ def write_memory_mart(tiers):
     (OUT_DIR/"memory_mart_tier01.md").write_text("\n".join(lines), encoding='utf-8')
 
 
+def write_memory_mart_tier23(tiers, max_per_topic: int = 50):
+    # Tier 2 and Tier 3 mart; Tier 3 grouped by topic with cap
+    lines = ["# Memory Mart (Tier 2/3)", ""]
+    # Tier 2 flat list
+    lines.append("## Tier 2")
+    for e in tiers.get(2, []):
+        topic = e.get('primary_topic','')
+        belief = e.get('core_belief','')
+        excerpt = e.get('excerpt','')
+        prov = e.get('provenance','')
+        role = e.get('role','')
+        role_tag = f" [{role}]" if role else ""
+        lines.append(f"- [{topic}] {belief}{role_tag} — \"{excerpt}\" (from {prov})")
+    lines.append("")
+    # Tier 3 grouped by topic
+    lines.append("## Tier 3 (grouped, capped per topic)")
+    by_topic = defaultdict(list)
+    for e in tiers.get(3, []):
+        by_topic[e.get('primary_topic','Misc')].append(e)
+    for topic in sorted(by_topic.keys()):
+        arr = by_topic[topic]
+        lines.append(f"### {topic} ({len(arr)})")
+        for e in arr[:max_per_topic]:
+            belief = e.get('core_belief','')
+            excerpt = e.get('excerpt','')
+            prov = e.get('provenance','')
+            role = e.get('role','')
+            role_tag = f" [{role}]" if role else ""
+            lines.append(f"- {belief}{role_tag} — \"{excerpt}\" (from {prov})")
+        if len(arr) > max_per_topic:
+            lines.append(f"- ...and {len(arr) - max_per_topic} more")
+        lines.append("")
+    (OUT_DIR/"memory_mart_tier23.md").write_text("\n".join(lines), encoding='utf-8')
+
+
+def write_memory_mart_all(tiers):
+    # Combined all tiers (Tier 3 grouped & capped like above)
+    lines = ["# Memory Mart (All Tiers)", ""]
+    lines.append("## Tier 0")
+    for e in tiers.get(0, []):
+        lines.append(f"- [{e.get('primary_topic','')}] {e.get('core_belief','')}")
+    lines.append("")
+    lines.append("## Tier 1")
+    for e in tiers.get(1, []):
+        lines.append(f"- [{e.get('primary_topic','')}] {e.get('core_belief','')} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+    lines.append("")
+    by_topic2 = defaultdict(list)
+    for e in tiers.get(2, []):
+        by_topic2[e.get('primary_topic','Misc')].append(e)
+    lines.append("## Tier 2")
+    for topic in sorted(by_topic2.keys()):
+        arr = by_topic2[topic]
+        lines.append(f"### {topic} ({len(arr)})")
+        for e in arr:
+            role = e.get('role','')
+            role_tag = f" [{role}]" if role else ""
+            lines.append(f"- {e.get('core_belief','')}{role_tag} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+        lines.append("")
+    by_topic3 = defaultdict(list)
+    for e in tiers.get(3, []):
+        by_topic3[e.get('primary_topic','Misc')].append(e)
+    lines.append("## Tier 3 (grouped, capped per topic)")
+    for topic in sorted(by_topic3.keys()):
+        arr = by_topic3[topic]
+        lines.append(f"### {topic} ({len(arr)})")
+        for e in arr[:50]:
+            role = e.get('role','')
+            role_tag = f" [{role}]" if role else ""
+            lines.append(f"- {e.get('core_belief','')}{role_tag} — \"{e.get('excerpt','')}\" (from {e.get('provenance','')})")
+        if len(arr) > 50:
+            lines.append(f"- ...and {len(arr) - 50} more")
+        lines.append("")
+    (OUT_DIR/"memory_mart_all.md").write_text("\n".join(lines), encoding='utf-8')
+
+
+# --- Auto-carve Misc into dynamic topics ---
+STOPWORDS = set('''a an the and or but if then else for to of in on at by with without from this that these those is are was were be been being do does did not no yes it its itself you your i me my mine we our they them their as into about over under within across up down out more most less least many much few lot lots very just here there now new old other another same different also than while when where why how which who whom whose because so such can could should would will shall may might must own per vs via etc'''.split())
+
+
+def tokenize(text: str):
+    text = text.lower()
+    toks = re.findall(r"[a-z0-9][a-z0-9\-]{2,}", text)
+    return [t for t in toks if t not in STOPWORDS]
+
+
+def load_carve_directives():
+    directives = []  # list of (name, compiled_regex)
+    try:
+        if CARVE_FILE.exists():
+            for raw in CARVE_FILE.read_text(encoding='utf-8').splitlines():
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.lower().startswith('carve:') and '~' in line:
+                    # format: carve: <name> ~ <regex>
+                    try:
+                        _, rest = line.split(':', 1)
+                        name_part, rx_part = rest.split('~', 1)
+                        name = name_part.strip()
+                        rx = rx_part.strip()
+                        directives.append((name, re.compile(rx, re.I)))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return directives
+
+
+def auto_carve(rows, top_n=8, min_count=5):
+    # Apply manual carves first if provided
+    manual = load_carve_directives()
+    if manual:
+        for r in rows:
+            if r['primary_topic'] == 'Misc':
+                hay = f"{r.get('thread_id','')}\n{r.get('excerpt','')}"
+                for name, rx in manual:
+                    if rx.search(hay):
+                        r['primary_topic'] = name
+                        break
+    # Collect terms from remaining Misc excerpts
+    term_count = defaultdict(int)
+    examples = defaultdict(list)
+    for r in rows:
+        if r['primary_topic'] == 'Misc':
+            terms = tokenize(r['excerpt'])
+            uniq = set(terms)
+            for t in uniq:
+                term_count[t] += 1
+                if len(examples[t]) < 3:
+                    examples[t].append(r['excerpt'])
+    # pick top terms
+    top_terms = [t for t,_ in sorted(term_count.items(), key=lambda x: (-x[1], x[0])) if term_count[t] >= min_count][:top_n]
+    dynamic_map = {t: f"Auto: {t}" for t in top_terms}
+    # Reassign topics for Misc rows when containing top term
+    for r in rows:
+        if r['primary_topic'] == 'Misc':
+            terms = set(tokenize(r['excerpt']))
+            hits = [t for t in top_terms if t in terms]
+            if hits:
+                r['primary_topic'] = dynamic_map[hits[0]]
+    # Write suggestions file
+    lines = ["# Auto Carves", "", "Top terms carved from Misc:"]
+    for t in top_terms:
+        lines.append(f"- carve: Auto: {t} ~ \\b{re.escape(t)}\\b (count={term_count[t]})")
+        for ex in examples[t]:
+            lines.append(f"  - e.g., \"{ex}\"")
+    if manual:
+        lines.append("\nManual carves applied:")
+        for name, rx in manual:
+            lines.append(f"- carve: {name} ~ {rx.pattern}")
+    (OUT_DIR/"auto_carves.md").write_text("\n".join(lines), encoding='utf-8')
+    return rows
+
+
+# --- Semantic opinion deltas ---
+
+def jaccard(a: set, b: set) -> float:
+    if not a and not b:
+        return 1.0
+    return len(a & b) / max(1, len(a | b))
+
+
+def write_opinion_deltas_semantic(rows, sim_threshold=0.55):
+    by_topic_user = defaultdict(list)
+    for r in rows:
+        if r['role'] == 'user':
+            by_topic_user[r['primary_topic']].append(r)
+    lines = ["# Opinion Deltas (Semantic)", ""]
+    for topic, arr in sorted(by_topic_user.items()):
+        if len(arr) < 2:
+            continue
+        arr.sort(key=lambda x: (_safe_dt(x['timestamp']) or datetime.min, x['excerpt']))
+        first, last = arr[0], arr[-1]
+        w1 = set(tokenize(first['excerpt']))
+        w2 = set(tokenize(last['excerpt']))
+        sim = jaccard(w1, w2)
+        if sim < sim_threshold:
+            added = sorted(list(w2 - w1))[:10]
+            removed = sorted(list(w1 - w2))[:10]
+            lines.append(f"## {topic} (similarity={sim:.2f})")
+            lines.append(f"- Earliest ({first['timestamp']}): \"{first['excerpt']}\"")
+            lines.append(f"- Latest   ({last['timestamp']}): \"{last['excerpt']}\"")
+            if added:
+                lines.append(f"- New terms: {', '.join(added)}")
+            if removed:
+                lines.append(f"- Dropped terms: {', '.join(removed)}")
+            lines.append("")
+    (OUT_DIR/"opinion_deltas_semantic.md").write_text("\n".join(lines), encoding='utf-8')
+
+
+# Legacy wrapper to keep compatibility; we now prefer semantic deltas
+
+def write_opinion_deltas(rows):
+    # Generate semantic deltas, and write a short pointer in the legacy file
+    write_opinion_deltas_semantic(rows)
+    (OUT_DIR/"opinion_deltas.md").write_text(
+        "This report moved to opinion_deltas_semantic.md (semantic similarity-based).",
+        encoding='utf-8'
+    )
+
+
 def main():
     rows = parse_rows()
+    # auto-carve after initial parse, before dedupe
+    rows = auto_carve(rows)
     rows = dedupe_merge(rows)
     write_csv(OUT_DIR/"normalized.csv", rows)
     clusters = cluster(rows)
@@ -450,6 +691,7 @@ def main():
     write_refined_report(refined_clusters, refined_synths)
     write_memory_files(tiers)
     write_memory_mart(tiers)
-
-if __name__ == "__main__":
-    main()
+    write_memory_mart_tier23(tiers)
+    write_memory_mart_all(tiers)
+    write_opinion_deltas(refined_rows)
+    write_opinion_deltas_semantic(refined_rows)
