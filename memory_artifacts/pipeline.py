@@ -1,9 +1,10 @@
 import csv, json, re
+import os
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-SRC = Path(r"a:\Padawan_Workspace\MP\copilot-activity-history.csv")
+SRC = Path(os.environ.get('HISTORY_CSV', r"a:\Padawan_Workspace\MP\copilot-activity-history.csv"))
 OUT_DIR = Path(r"a:\Padawan_Workspace\MP\memory_artifacts")
 
 # Ontology & approvals files (human-in-the-loop)
@@ -985,6 +986,8 @@ def main():
     # Apply accepted promotions and rebuild final master mart
     tiers = apply_promotions(tiers, refined_rows)
     write_memory_mart_all(tiers)
+    # Regenerate cross-reference after promotions to reflect final tiers
+    write_cross_reference_table(tiers, refined_rows, ontology)
 
 if __name__ == "__main__":
     main()
