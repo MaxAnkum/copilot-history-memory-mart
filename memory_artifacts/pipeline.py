@@ -914,6 +914,46 @@ def write_opinion_deltas(rows):
     )
 
 
+def apply_promotions(tiers, rows):
+    """Apply accepted promotions from proposals.json, validating against current rows.
+    Alignment check: only promote entries whose (excerpt, provenance) exist in rows index.
+    """
+    path = OUT_DIR / "proposals.json"
+    if not path.exists():
+        return tiers
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return tiers
+    promos = data.get("promotions", []) or []
+    # Build row index to ensure alignment with cross_reference source rows
+    row_keys = set((r.get('excerpt',''), r.get('provenance_id','')) for r in rows)
+    # Helper to find item index in a tier by (excerpt, provenance)
+    def _find_idx(arr, key):
+        for i, e in enumerate(arr):
+            if (e.get('excerpt',''), e.get('provenance','')) == key:
+                return i
+        return -1
+    # Apply moves
+    for p in promos:
+        frm = int(p.get('from_tier', 3))
+        to = int(p.get('to_tier', 2))
+        if frm not in tiers or to not in tiers:
+            continue
+        key = (p.get('excerpt',''), p.get('provenance',''))
+        # alignment with rows (and thus cross_reference source)
+        if key not in row_keys:
+            continue
+        i = _find_idx(tiers[frm], key)
+        if i < 0:
+            continue
+        item = tiers[frm].pop(i)
+        # avoid duplicate in target
+        if _find_idx(tiers[to], key) < 0:
+            tiers[to].append(item)
+    return tiers
+
+
 def main():
     rows = parse_rows()
     # auto-carve after initial parse, before dedupe
@@ -942,6 +982,9 @@ def main():
     write_cross_reference_table(tiers, refined_rows, ontology)
     propose_promotions(tiers, refined_rows, ontology)
     write_master_mart_proposed(tiers, ontology)
+    # Apply accepted promotions and rebuild final master mart
+    tiers = apply_promotions(tiers, refined_rows)
+    write_memory_mart_all(tiers)
 
 if __name__ == "__main__":
     main()
