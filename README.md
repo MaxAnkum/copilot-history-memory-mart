@@ -46,6 +46,33 @@ Additional outputs when building ontology:
 - memory_artifacts/final/ontology_build_log.md — audit log (mapping rules, value_map, top sources)
 - memory_artifacts/ontology_sources.json — editable seeds and accumulated sources/authors
 
+## Run in Docker
+
+Build the image (from repo root):
+
+```powershell
+docker build -t memory-mart .
+```
+
+Run with your local CSV mounted and outputs written to a local folder:
+
+```powershell
+# Create an outputs folder on host (optional)
+mkdir -Force .\out | Out-Null
+
+docker run --rm ^
+  -e COMPACT_MODE=1 -e ONTOLOGY_BUILD=1 ^
+  -e HISTORY_CSV=/data/copilot-activity-history.csv ^
+  -e MEM_OUT_DIR=/app/memory_artifacts ^
+  -v ${PWD}/copilot-activity-history.csv:/data/copilot-activity-history.csv:ro ^
+  -v ${PWD}/memory_artifacts:/app/memory_artifacts ^
+  memory-mart
+```
+
+Notes:
+- If you don’t mount `memory_artifacts`, the container writes inside the image layer; mounting makes outputs visible and reusable.
+- You can also mount a different output dir and set `MEM_OUT_DIR` accordingly.
+
 ## Flags (environment variables)
 - COMPACT_MODE: 1 to write only OneDoc + cross_reference (default). Set 0 to emit extra intermediate files.
 - ONTOLOGY_BUILD: 1 to rebuild ontology.json and audit log from data + seeds; 0 to reuse existing ontology.json.

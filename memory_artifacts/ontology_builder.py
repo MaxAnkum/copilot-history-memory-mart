@@ -337,9 +337,15 @@ def build_ontology(rows, tiers, out_dir: Path, seeds: dict | None = None, existi
     final_dir = out_dir / 'final'
     final_dir.mkdir(parents=True, exist_ok=True)
     lines = ["# Ontology build log", "", f"Built: {datetime.utcnow().isoformat()}Z", ""]
-    lines.append("## Topic → category mapping decisions")
+    lines.append("## Topic → category mapping decisions (grouped by category)")
+    # Group applied decisions by category for readability
+    grp = {}
     for topic, slug, rule in applied:
-        lines.append(f"- '{topic}' → `{slug}` ({rule})")
+        grp.setdefault(slug, []).append((topic, rule))
+    for slug in sorted(grp.keys()):
+        lines.append(f"### {slug}")
+        for topic, rule in sorted(grp[slug], key=lambda x: x[0].lower()):
+            lines.append(f"- '{topic}' ({rule})")
     lines.append("")
     lines.append("## value_map (category → Tier 0/1 value IDs)")
     if vmap:

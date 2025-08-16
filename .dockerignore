@@ -1,0 +1,29 @@
+# Exclude everything by default then allow source files
+**
+
+# Allow code and minimal docs
+!memory_artifacts/
+!memory_artifacts/pipeline.py
+!memory_artifacts/ontology_builder.py
+!README.md
+!requirements.txt
+!Dockerfile
+
+# Always exclude personal/private and generated data
+copilot-activity-history.csv
+memory_artifacts/final/
+memory_artifacts/*.md
+memory_artifacts/*.csv
+memory_artifacts/memory_tiers.json
+memory_artifacts/memory_mart_*.md
+memory_artifacts/proposals*.json
+memory_artifacts/proposals*.md
+memory_artifacts/refined_*.md
+memory_artifacts/report*.md
+memory_artifacts/ontology.json
+memory_artifacts/ontology.backup-*.json
+memory_artifacts/ontology_sources.json
+.venv/
+.vscode/
+__pycache__/
+*.pyc

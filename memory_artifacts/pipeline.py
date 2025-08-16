@@ -9,8 +9,10 @@ except Exception:
     # Fallback for package-style execution
     from .ontology_builder import build_ontology
 
-SRC = Path(os.environ.get('HISTORY_CSV', r"a:\Padawan_Workspace\MP\copilot-activity-history.csv"))
-OUT_DIR = Path(r"a:\Padawan_Workspace\MP\memory_artifacts")
+# Cross-platform roots and defaults
+ROOT_DIR = Path(os.environ.get('PROJECT_ROOT', Path(__file__).resolve().parent.parent))
+SRC = Path(os.environ.get('HISTORY_CSV', str(ROOT_DIR / "copilot-activity-history.csv")))
+OUT_DIR = Path(os.environ.get('MEM_OUT_DIR', str(ROOT_DIR / "memory_artifacts")))
 # Compact mode: emit only OneDoc + final cross_reference by default (override with COMPACT_MODE=0)
 COMPACT_MODE = bool(int(os.environ.get('COMPACT_MODE', '1')))
 
