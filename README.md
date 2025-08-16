@@ -48,6 +48,32 @@ Additional outputs when building ontology:
 - memory_artifacts/final/ontology_build_log.md — audit log (mapping rules, value_map, top sources)
 - memory_artifacts/ontology_sources.json — editable seeds and accumulated sources/authors
 
+## Where to get copilot-activity-history.csv
+
+- Official export (Microsoft Privacy):
+  - Visit https://account.microsoft.com/privacy/copilot
+  - Sign in with the same Microsoft account you use with Copilot.
+  - In "Your Copilot activity history", choose "Export all activity history".
+  - Download the export. If the file name differs, you can rename it to `copilot-activity-history.csv` for convenience.
+  - Note: UI wording and download format may evolve; the entry point is the Microsoft Privacy portal under Copilot.
+
+- Default location: this repo expects the file at the repo root as `copilot-activity-history.csv`. It’s ignored by git for privacy.
+- Custom location: point the pipeline to any path via the `HISTORY_CSV` env var.
+
+Examples (Windows PowerShell):
+
+```powershell
+# CSV in repo root
+$env:HISTORY_CSV = "${PWD}/copilot-activity-history.csv"
+
+# CSV elsewhere on disk
+$env:HISTORY_CSV = "D:/exports/copilot-activity-history.csv"
+```
+
+How to obtain the CSV (alternatives):
+- If you keep your own logs, any CSV with columns similar to timestamp/prompt/response/source will work; the pipeline is lenient and ignores unknown columns.
+- You can also generate a minimal CSV manually for testing (a few rows) and iterate from there.
+
 ## Run in Docker
 
 Build the image (from repo root):
