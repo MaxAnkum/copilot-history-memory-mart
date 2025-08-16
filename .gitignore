@@ -1,0 +1,11 @@
+# Virtual environment
+.venv/
+
+# User data (variable per user)
+copilot-activity-history.csv
+
+# Generated outputs (recreated by pipeline)
+memory_artifacts/
+
+# Build artifacts
+*.zip
