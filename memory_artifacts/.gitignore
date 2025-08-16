@@ -1,0 +1,9 @@
+# Ignore everything in this folder by default (privacy-safe)
+*
+
+# Keep only source code and this file tracked
+!.gitignore
+!pipeline.py
+!ontology_builder.py
+
+# (All generated artifacts, JSON seeds, logs, caches, etc. remain ignored)
