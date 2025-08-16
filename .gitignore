@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.env
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+docker-compose*.yml
+*.env
+*.env.*
+
+# Docker
+.dockerignore
+*.tar
+
+# Project outputs (generated) and personal JSON
+/memory_artifacts/final/
+/memory_artifacts/*.md
+/memory_artifacts/*.csv
+/memory_artifacts/memory_tiers.json
+/memory_artifacts/memory_mart_*.md
+/memory_artifacts/proposals*.json
+/memory_artifacts/proposals*.md
+/memory_artifacts/refined_*.md
+/memory_artifacts/report*.md
+/memory_artifacts/ontology.json
+/memory_artifacts/ontology.backup-*.json
+/*.log
+*.log
+*.tmp
+*.temp
+~$*
+/memory_artifacts/ontology_sources.json
+
+# Local data
+/copilot-activity-history.csv
+
+# Keep only source code tracked under memory_artifacts
+!/memory_artifacts/pipeline.py
+!/memory_artifacts/ontology_builder.py
+
+# Keep docs and container config
+!/README.md
+!/Dockerfile
+!/requirements.txt

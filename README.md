@@ -73,6 +73,20 @@ Notes:
 - If you don’t mount `memory_artifacts`, the container writes inside the image layer; mounting makes outputs visible and reusable.
 - You can also mount a different output dir and set `MEM_OUT_DIR` accordingly.
 
+Stop containers (cleanup):
+
+```powershell
+# Stop all running containers (if any)
+$ids = docker ps -q; if ($ids) { docker stop $ids }
+
+# List all containers and statuses
+docker ps -a --format "table {{.ID}}`t{{.Image}}`t{{.Status}}`t{{.Names}}"
+```
+
+Privacy defaults:
+- `.gitignore` and `.dockerignore` exclude personal/generated data (CSV, ontology.json, ontology_sources.json, final/ outputs).
+- The pipeline auto-creates a minimal seeds file if missing so you don’t need to publish private JSON.
+
 ## Flags (environment variables)
 - COMPACT_MODE: 1 to write only OneDoc + cross_reference (default). Set 0 to emit extra intermediate files.
 - ONTOLOGY_BUILD: 1 to rebuild ontology.json and audit log from data + seeds; 0 to reuse existing ontology.json.
