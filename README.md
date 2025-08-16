@@ -1,4 +1,6 @@
-# Memory Mart Pipeline
+# copilot-history-memory-mart
+
+Compact pipeline to parse your Copilot activity history, synthesize a tiered “Memory Mart,” and build a lightweight, auditable ontology—shippable as a single OneDoc with clean defaults and privacy-safe git/Docker setup.
 
 A compact, auditable pipeline that parses your Copilot activity history, synthesizes a tiered "Memory Mart", and builds a lightweight ontology to organize topics and link Tier 2/3 items to Tier 0/1 values.
 
@@ -51,7 +53,7 @@ Additional outputs when building ontology:
 Build the image (from repo root):
 
 ```powershell
-docker build -t memory-mart .
+docker build -t copilot-history-memory-mart:dev .
 ```
 
 Run with your local CSV mounted and outputs written to a local folder:
@@ -66,7 +68,7 @@ docker run --rm ^
   -e MEM_OUT_DIR=/app/memory_artifacts ^
   -v ${PWD}/copilot-activity-history.csv:/data/copilot-activity-history.csv:ro ^
   -v ${PWD}/memory_artifacts:/app/memory_artifacts ^
-  memory-mart
+  copilot-history-memory-mart:dev
 ```
 
 Notes:
