@@ -3,15 +3,27 @@ import os
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+try:
+    from ontology_builder import build_ontology
+except Exception:
+    # Fallback for package-style execution
+    from .ontology_builder import build_ontology
 
 SRC = Path(os.environ.get('HISTORY_CSV', r"a:\Padawan_Workspace\MP\copilot-activity-history.csv"))
 OUT_DIR = Path(r"a:\Padawan_Workspace\MP\memory_artifacts")
 # Compact mode: emit only OneDoc + final cross_reference by default (override with COMPACT_MODE=0)
 COMPACT_MODE = bool(int(os.environ.get('COMPACT_MODE', '1')))
 
+# Ontology suggestion/auto-apply controls
+ONTOLOGY_SUGGEST = bool(int(os.environ.get('ONTOLOGY_SUGGEST', '0')))
+ONTOLOGY_AUTO_APPLY = bool(int(os.environ.get('ONTOLOGY_AUTO_APPLY', '0')))
+# Full rebuild control (deterministic, auditable)
+ONTOLOGY_BUILD = bool(int(os.environ.get('ONTOLOGY_BUILD', '0')))
+
 # Ontology & approvals files (human-in-the-loop)
 ONTOLOGY_FILE = OUT_DIR / "ontology.json"
 APPROVALS_FILE = OUT_DIR / "approvals.json"
+ONTOLOGY_SEEDS_FILE = OUT_DIR / "ontology_sources.json"
 # Optional file with manual carves: lines like `carve: <name> ~ <regex>`
 CARVE_FILE = OUT_DIR / "carves.txt"
 # Optional date filter (inclusive). Leave as None to include all.
@@ -398,6 +410,26 @@ def write_refined_report(clusters, synths):
     (OUT_DIR/"refined_report.md").write_text(content, encoding='utf-8')
 
 
+def _ensure_minimal_seeds_file():
+    """Create a minimal ontology_sources.json if missing, without personal data.
+    Structure matches ontology_builder.load_seeds defaults.
+    Only writes when the file does not exist.
+    """
+    if ONTOLOGY_SEEDS_FILE.exists():
+        return
+    try:
+        ONTOLOGY_SEEDS_FILE.write_text(json.dumps({
+            "categories": {},
+            "aliases": {},
+            "patterns": {},
+            "sources": [],
+            "authors": []
+        }, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception:
+        # Non-fatal: builder can still create it later
+        pass
+
+
 def propose_memory(clusters):
     tiers = {0:[],1:[],2:[],3:[]}
 
@@ -575,7 +607,100 @@ def write_master_mart_proposed(tiers, ontology):
     pass
 
 def write_memory_mart_onedoc(tiers, rows, ontology, filename="Memory_Mart_OneDoc.md", target_lines=300):
-    pass
+    """Write a compact OneDoc Memory Mart into final/ with a soft line budget.
+    Layout:
+      - Title + summary
+      - Tier 0 (beliefs only)
+      - Tier 1 (belief + short excerpt + provenance)
+      - Tier 2 (flat list, role-tagged)
+      - Tier 3 (grouped by ont_category, capped per topic)
+    """
+    final_dir = OUT_DIR / 'final'
+    final_dir.mkdir(parents=True, exist_ok=True)
+
+    # Rows should already be reindexed with ontology; build a quick idx by (excerpt, provenance)
+    row_idx = {}
+    for r in rows or []:
+        row_idx[(r.get('excerpt',''), r.get('provenance_id',''))] = r
+
+    def remain(lines):
+        return max(0, target_lines - len(lines))
+
+    def add(lines, text):
+        if remain(lines) <= 0:
+            return False
+        lines.append(text)
+        return True
+
+    lines = []
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M')
+    topics = sorted({e.get('primary_topic','Misc') for arr in (tiers or {}).values() for e in arr})
+    add(lines, "# Memory Mart — OneDoc")
+    add(lines, "")
+    add(lines, f"Generated: {ts}")
+    add(lines, f"Items: rows={len(rows or [])} • topics={len(topics)} • compact={int(COMPACT_MODE)}")
+    add(lines, "")
+
+    # Tier 0
+    add(lines, "## Tier 0 (Foundational beliefs)")
+    for e in tiers.get(0, []):
+        if remain(lines) <= 2:
+            break
+        add(lines, f"- [{e.get('primary_topic','')}] {e.get('core_belief','')}")
+    add(lines, "")
+
+    # Tier 1
+    add(lines, "## Tier 1 (Anchors)")
+    for i, e in enumerate(tiers.get(1, [])[:40]):
+        if remain(lines) <= 3:
+            break
+        r = row_idx.get((e.get('excerpt',''), e.get('provenance','')),{})
+        prov = e.get('provenance','') or r.get('provenance_id','')
+        add(lines, f"- [{e.get('primary_topic','')}] {e.get('core_belief','')} — \"{_short_words(e.get('excerpt',''), 18)}\" (from {prov})")
+    add(lines, "")
+
+    # Tier 2
+    add(lines, "## Tier 2 (Practicals)")
+    for e in tiers.get(2, []):
+        if remain(lines) <= 3:
+            break
+        r = row_idx.get((e.get('excerpt',''), e.get('provenance','')),{})
+        prov = e.get('provenance','') or r.get('provenance_id','')
+        role = e.get('role','')
+        role_tag = f" [{role}]" if role else ""
+        add(lines, f"- [{e.get('primary_topic','')}] {e.get('core_belief','')}{role_tag} — \"{_short_words(e.get('excerpt',''), 18)}\" (from {prov})")
+    add(lines, "")
+
+    # Tier 3 grouped
+    add(lines, "## Tier 3 (Grouped, capped per topic)")
+    by_topic = defaultdict(list)
+    for e in tiers.get(3, []):
+        # Prefer ont_category from matched row; else slug of topic
+        r = row_idx.get((e.get('excerpt',''), e.get('provenance','')),{})
+        cat = r.get('ont_category') or _slugify(e.get('primary_topic','Misc'))
+        by_topic[cat].append(e)
+    for cat in sorted(by_topic.keys()):
+        if remain(lines) <= 4:
+            break
+        arr = by_topic[cat]
+        add(lines, f"### {cat} ({len(arr)})")
+        per_topic_cap = 5
+        for e in arr[:per_topic_cap]:
+            if remain(lines) <= 2:
+                break
+            r = row_idx.get((e.get('excerpt',''), e.get('provenance','')),{})
+            prov = e.get('provenance','') or r.get('provenance_id','')
+            role = e.get('role','')
+            role_tag = f" [{role}]" if role else ""
+            add(lines, f"- {e.get('core_belief','')}{role_tag} — \"{_short_words(e.get('excerpt',''), 18)}\" (from {prov})")
+        add(lines, "")
+
+    # Footer: brief hint about cross-reference table
+    if remain(lines) >= 3:
+        add(lines, "---")
+        add(lines, "See also: final/cross_reference.md for linkage to Tier 0/1 values and influences.")
+
+    (final_dir / filename).write_text("\n".join(lines), encoding='utf-8')
 
 # ==================== Ontology-driven regrouping & cross-references ====================
 
@@ -641,6 +766,170 @@ def reindex_with_ontology(rows, ontology):
             cat = _slugify(r['primary_topic'][5:])
         r['ont_category'] = cat or _slugify(r['primary_topic'])
     return rows
+
+
+def _topic_slug(topic: str) -> str:
+    # Prefer explicit ontology map target slug when present; else slugify the topic label
+    return _slugify(topic)
+
+
+def suggest_ontology_changes(tiers, rows, ontology, max_values_per_cat: int = 2):
+    """Suggest ontology changes based only on Tier 2/3 content.
+    Does NOT alter ontology 'values' (Tier 0/1). Proposes:
+      - categories: add missing category skeletons for mapped or to-be-mapped topics
+      - map: ensure each Tier 2/3 topic has a category slug mapping
+      - value_map: suggest links from category -> existing Tier 0/1 values using token overlap
+    Returns (patch_dict, summary_stats_dict).
+    """
+    existing_map = dict(ontology.get('map', {}))
+    existing_cats = dict(ontology.get('categories', {}))
+    existing_vmap = dict(ontology.get('value_map', {}) or {})
+
+    # Collect Tier 2/3 topics
+    topics = []
+    for tier in (2, 3):
+        for e in tiers.get(tier, []) or []:
+            t = e.get('primary_topic') or 'Misc'
+            topics.append(t)
+    topics = sorted({t for t in topics})
+
+    patch = {"categories": {}, "map": {}, "value_map": {}}
+
+    # Build quick lookup of example text per topic for better value_map suggestion context
+    topic_samples = defaultdict(list)
+    for r in rows:
+        if r.get('primary_topic') in topics:
+            ex = (r.get('excerpt') or '')
+            if ex:
+                topic_samples[r['primary_topic']].append(ex)
+    # Prepare value candidates from ontology values (Tier 0/1 only)
+    val_candidates = [(v.get('id'), v.get('label'), set(tokenize(v.get('label', ''))), v.get('tier'))
+                      for v in ontology.get('values', []) if v.get('tier') in (0, 1)]
+
+    for topic in topics:
+        # map suggestion
+        if topic not in existing_map:
+            cat_slug = _topic_slug(topic if not topic.lower().startswith('auto:') else topic.split(':', 1)[1])
+            # Normalize auto buckets to 'auto-<word>'
+            if topic.lower().startswith('auto'):
+                cat_slug = _slugify(topic)
+            patch['map'][topic] = cat_slug
+        else:
+            cat_slug = existing_map[topic]
+
+        # category skeleton if missing
+        if cat_slug not in existing_cats:
+            patch['categories'][cat_slug] = {
+                "label": topic if not topic.lower().startswith('auto') else f"Auto: {topic.split(':',1)[-1].strip()}",
+                "description": "Auto-added from Tier 2/3 topic (pending human curation).",
+                "aliases": [],
+                # keep external refs empty for now; human can enrich later
+                "wiki_refs": []
+            }
+
+        # value_map suggestions via token overlap of topic label+samples vs Tier 0/1 value labels
+        sample_text = " ".join(topic_samples.get(topic, [])[:5])
+        toks = set(tokenize(f"{topic} {sample_text}"))
+        scored = []
+        for vid, vlabel, vtoks, t in val_candidates:
+            if not vtoks:
+                continue
+            score = len(vtoks & toks)
+            if score >= 2:  # minimal signal
+                scored.append((score, vid))
+        scored.sort(reverse=True)
+        if scored:
+            chosen = [vid for _, vid in scored[:max_values_per_cat]]
+            prev = set(existing_vmap.get(cat_slug, []))
+            add = [vid for vid in chosen if vid not in prev]
+            if add:
+                patch['value_map'][cat_slug] = add
+
+    # Clean empty sections
+    if not patch['categories']:
+        patch.pop('categories')
+    if not patch['map']:
+        patch.pop('map')
+    if not patch.get('value_map'):
+        patch.pop('value_map', None)
+
+    stats = {
+        "topics_considered": len(topics),
+        "new_categories": len(patch.get('categories', {})),
+        "new_mappings": len(patch.get('map', {})),
+        "value_map_additions": sum(len(v) for v in (patch.get('value_map', {}) or {}).values())
+    }
+    return patch, stats
+
+
+def apply_ontology_patch(patch, ontology):
+    """Merge patch into ontology (categories/map/value_map only). Back up current file.
+    Returns the updated ontology dict.
+    """
+    if not patch:
+        return ontology
+    # Shallow copies
+    cats = dict(ontology.get('categories', {}))
+    mp = dict(ontology.get('map', {}))
+    vmap = dict(ontology.get('value_map', {}) or {})
+
+    for k, v in (patch.get('categories', {}) or {}).items():
+        if k not in cats:
+            cats[k] = v
+    for k, v in (patch.get('map', {}) or {}).items():
+        mp[k] = v
+    for k, arr in (patch.get('value_map', {}) or {}).items():
+        cur = list(vmap.get(k, []))
+        for vid in arr:
+            if vid not in cur:
+                cur.append(vid)
+        vmap[k] = cur
+
+    updated = {**ontology, "categories": cats, "map": mp, "value_map": vmap}
+    # Backup and write
+    ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+    backup = ONTOLOGY_FILE.with_name(f"ontology.backup-{ts}.json")
+    try:
+        backup.write_text(json.dumps(ontology, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+    ONTOLOGY_FILE.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding='utf-8')
+    return updated
+
+
+def write_ontology_suggestions(patch, stats):
+    """Write a human-friendly suggestions report and raw patch under final/."""
+    final_dir = OUT_DIR / 'final'
+    final_dir.mkdir(parents=True, exist_ok=True)
+    # Raw patch JSON
+    (final_dir / 'ontology_patch.json').write_text(
+        json.dumps(patch or {}, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+    # Pretty MD
+    lines = ["# Ontology suggestions (Tier 2/3 derived)", ""]
+    lines.append(f"- Topics considered: {stats.get('topics_considered', 0)}")
+    lines.append(f"- New categories: {stats.get('new_categories', 0)}")
+    lines.append(f"- New topic→category mappings: {stats.get('new_mappings', 0)}")
+    lines.append(f"- New value_map links: {stats.get('value_map_additions', 0)}")
+    lines.append("")
+    if patch.get('map'):
+        lines.append("## Proposed topic→category map entries")
+        for k, v in sorted(patch['map'].items()):
+            lines.append(f"- '{k}' → `{v}`")
+        lines.append("")
+    if patch.get('categories'):
+        lines.append("## Proposed new categories")
+        for k, v in sorted(patch['categories'].items()):
+            lines.append(f"- `{k}`: {v.get('label','')} — {v.get('description','').split('.')[0] or ''}.")
+        lines.append("")
+    if patch.get('value_map'):
+        lines.append("## Proposed value_map links (category → Tier 0/1 value IDs)")
+        for k, arr in sorted(patch['value_map'].items()):
+            if not arr:
+                continue
+            lines.append(f"- `{k}` → {', '.join(arr)}")
+        lines.append("")
+    (final_dir / 'ontology_suggestions.md').write_text("\n".join(lines), encoding='utf-8')
 
 
 def _value_candidates(ontology):
@@ -813,6 +1102,8 @@ def apply_promotions(tiers, rows, promotions=None):
 
 
 def main():
+    # Ensure seeds file exists so repo need not publish personal JSON by default
+    _ensure_minimal_seeds_file()
     rows = parse_rows()
     rows = auto_carve(rows)
     rows = dedupe_merge(rows)
@@ -835,7 +1126,24 @@ def main():
         write_memory_mart_all(tiers)
         write_opinion_deltas(refined_rows)
         write_opinion_deltas_semantic(refined_rows)
-    ontology = load_ontology(tiers)
+    # Build ontology deterministically if requested (produces ontology.json + build log)
+    if ONTOLOGY_BUILD:
+        # Preserve Tier 0 exactly; rebuild Tier 1 dynamically; rebuild Tier 2/3 structures
+        existing_vals = None
+        try:
+            if ONTOLOGY_FILE.exists():
+                existing_vals = [v for v in json.loads(ONTOLOGY_FILE.read_text(encoding='utf-8')).get('values', []) if int(v.get('tier', 9)) == 0]
+        except Exception:
+            existing_vals = None
+        ontology = build_ontology(refined_rows, tiers, OUT_DIR, existing_values=existing_vals, preserve_tier0_only=True)
+    else:
+        ontology = load_ontology(tiers)
+    # Ontology suggestions/auto-apply (Tier 2/3 derived only)
+    if ONTOLOGY_SUGGEST:
+        patch, stats = suggest_ontology_changes(tiers, refined_rows, ontology)
+        write_ontology_suggestions(patch, stats)
+        if ONTOLOGY_AUTO_APPLY and patch:
+            ontology = apply_ontology_patch(patch, ontology)
     refined_rows = reindex_with_ontology(refined_rows, ontology)
     if not COMPACT_MODE:
         write_cross_reference_table(tiers, refined_rows, ontology)
