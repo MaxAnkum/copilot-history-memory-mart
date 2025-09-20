@@ -1,8 +1,16 @@
 # copilot-history-memory-mart
 
-Compact pipeline to parse your Copilot activity history, synthesize a tiered “Memory Mart,” and build a lightweight, auditable ontology—shippable as a single OneDoc with clean defaults and privacy-safe git/Docker setup.
+🧠 **Transform your Copilot interactions into organized, actionable knowledge.**
 
-A compact, auditable pipeline that parses your Copilot activity history, synthesizes a tiered "Memory Mart", and builds a lightweight ontology to organize topics and link Tier 2/3 items to Tier 0/1 values.
+This tool analyzes your Copilot activity history and creates a structured "Memory Mart" - a intelligent knowledge base that learns from your conversations. It automatically categorizes insights, builds connections between related topics, and distills your interactions into foundational beliefs, practical notes, and reference materials.
+
+**Key Features:**
+- 📊 **Smart Organization**: Automatically sorts your Copilot conversations into a tiered knowledge system
+- 🔗 **Intelligent Linking**: Builds an ontology that connects related topics and insights  
+- 📝 **Clean Output**: Generates a single, skimmable OneDoc with all your key learnings
+- 🔒 **Privacy-First**: Keeps your data local with git-safe defaults and Docker support
+- ⚡ **Zero Config**: Works out-of-the-box with sensible defaults
+
 
 ## How it organizes info (at a glance)
 
